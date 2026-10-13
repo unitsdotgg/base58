@@ -251,10 +251,13 @@ def _pair_values(base: int) -> list:
     # Map a native 16-bit word holding two digit bytes to its 2-digit value.
     little = memoryview(b'\x01\x00').cast('H')[0] == 1
     pv = [0] * (256 * base)
-    for a in range(base):
-        for b in range(base):
-            key = a | (b << 8) if little else (a << 8) | b
-            pv[key] = a * base + b
+    for x in range(base):
+        # little endian: key = a | (x << 8) -> a * base + x
+        # big endian:    key = (x << 8) | b -> x * base + b
+        if little:
+            pv[x << 8:(x << 8) + base] = range(x, base * base, base)
+        else:
+            pv[x << 8:(x << 8) + base] = range(x * base, x * base + base)
     return pv
 
 
@@ -327,23 +330,24 @@ def b58decode_check(
         if info is None and len(alphabet) < 255:
             base = len(alphabet)
             info = (_get_base58_translate_table(alphabet, bool(autofix)),
-                    base, base ** 2, base ** 3, base ** 4, base ** 5)
+                    base ** 2, base ** 4, base ** 8, _pair_values(base))
             _CHECK_INFO[key] = info
     elif isinstance(alphabet, bytes) and len(alphabet) < 255:
         base = len(alphabet)
         info = (_get_base58_translate_table(alphabet, autofix),
-                base, base ** 2, base ** 3, base ** 4, base ** 5)
+                base ** 2, base ** 4, base ** 8, _pair_values(base))
     if info is not None:
-        table, base, b2, b3, b4, b5 = info
+        table, b2, b4, b8, pv = info
         digits = v.translate(table)
         if b'\xff' not in digits:
-            pad = -len(digits) % 5
+            pad = -len(digits) % 8
             if pad:
                 digits = b'\0' * pad + digits
             acc = 0
-            it = iter(digits)
-            for a, b, c, d, e in zip(it, it, it, it, it):
-                acc = acc * b5 + (a * b4 + b * b3 + c * b2 + d * base + e)
+            it = iter(memoryview(digits).cast('H'))
+            for p, q, r, s in zip(it, it, it, it):
+                acc = acc * b8 + (
+                    (pv[p] * b2 + pv[q]) * b4 + pv[r] * b2 + pv[s])
     if acc < 0:
         acc = b58decode_int(v, alphabet, autofix=autofix)
     result = acc.to_bytes(nz + (acc.bit_length() + 7) // 8, 'big')
