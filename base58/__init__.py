@@ -168,15 +168,43 @@ def b58decode(
     Decode a Base58 encoded string
     """
     v = v.rstrip()
-    v = scrub_input(v)
+    if isinstance(v, str):
+        v = v.encode('ascii')
 
     origlen = len(v)
     v = v.lstrip(alphabet[0:1])
-    newlen = len(v)
+    nzeros = origlen - len(v)
 
-    acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
+    info = None
+    if isinstance(v, bytes) and type(alphabet) is bytes:
+        cache = _DECODE_INFO_AF if autofix else _DECODE_INFO
+        info = cache.get(alphabet)
+        if info is None and len(alphabet) < 255:
+            base = len(alphabet)
+            info = (_get_base58_translate_table(alphabet, bool(autofix)),
+                    base, base * base, base ** 3, base ** 4)
+            cache[alphabet] = info
+    if info is not None:
+        table, base, b2, b3, b4 = info
+        digits = v.translate(table)
+        if b'\xff' not in digits:
+            pad = -len(digits) % 4
+            if pad:
+                digits = b'\0' * pad + digits
+            acc = 0
+            it = iter(digits)
+            for a, b, c, d in zip(it, it, it, it):
+                acc = acc * b4 + (a * b3 + b * b2 + c * base + d)
+        else:
+            acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
+    else:
+        acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
 
-    return acc.to_bytes(origlen - newlen + (acc.bit_length() + 7) // 8, 'big')
+    return acc.to_bytes(nzeros + (acc.bit_length() + 7) // 8, 'big')
+
+
+_DECODE_INFO: dict = {}
+_DECODE_INFO_AF: dict = {}
 
 
 def b58encode_check(
