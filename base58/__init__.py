@@ -40,12 +40,70 @@ def b58encode_int(
     """
     if not i and default_one:
         return alphabet[0:1]
-    string = b""
     base = len(alphabet)
+    if i < 0 or base > 256 or base < 2:
+        string = b""
+        while i:
+            i, idx = divmod(i, base)
+            string = alphabet[idx:idx+1] + string
+        return string
+    pairs, sq, big = _get_encode_table(alphabet)
+    if pairs is None:
+        string = b""
+        while i:
+            i, idx = divmod(i, base)
+            string = alphabet[idx:idx+1] + string
+        return string
+    parts = []
+    append = parts.append
     while i:
-        i, idx = divmod(i, base)
-        string = alphabet[idx:idx+1] + string
-    return string
+        i, r = divmod(i, big)
+        hi, lo = divmod(r, sq)
+        append(pairs[lo])
+        append(pairs[hi])
+    parts.reverse()
+    return b''.join(parts).lstrip(alphabet[0:1])
+
+
+@lru_cache()
+def _get_encode_table(alphabet: bytes):
+    chars = [alphabet[j:j+1] for j in range(len(alphabet))]
+    pairs = [a + b for a in chars for b in chars]
+    sq = len(alphabet) ** 2
+    if alphabet[0] in alphabet[1:]:
+        pairs = None
+    return pairs, sq, sq * sq
+
+
+@lru_cache()
+def _get_decode_table(alphabet: bytes, autofix: bool):
+    invmap = _get_base58_decode_map(alphabet, autofix=autofix)
+    tbl = bytearray(b'\xff' * 256)
+    for char, idx in invmap.items():
+        tbl[char] = idx
+    return bytes(tbl)
+
+
+def _digits_to_int(d: bytes, base: int) -> int:
+    n = len(d)
+    if n <= 12:
+        acc = 0
+        for c in d:
+            acc = acc * base + c
+        return acc
+    n2 = 1
+    while n2 < n:
+        n2 <<= 1
+    x = int.from_bytes(d, 'big')
+    w = 1
+    mult = base
+    while w < n2:
+        mask = int.from_bytes(
+            (b'\0' * w + b'\xff' * w) * (n2 // (2 * w)), 'big')
+        x = ((x >> (8 * w)) & mask) * mult + (x & mask)
+        mult *= mult
+        w <<= 1
+    return x
 
 
 def b58encode(
@@ -93,10 +151,19 @@ def b58decode_int(
         v = v.rstrip()
     v = scrub_input(v)
 
+    base = len(alphabet)
+    if 2 <= base <= 255 and isinstance(v, (bytes, bytearray)):
+        digits = v.translate(_get_decode_table(alphabet, autofix))
+        bad = digits.find(255)
+        if bad >= 0:
+            raise ValueError(
+                "Invalid character {!r}".format(chr(v[bad]))
+            )
+        return _digits_to_int(digits, base)
+
     map = _get_base58_decode_map(alphabet, autofix=autofix)
 
     decimal = 0
-    base = len(alphabet)
     try:
         for char in v:
             decimal = decimal * base + map[char]
