@@ -110,19 +110,24 @@ def _digits_to_int(d: bytes, base: int) -> int:
         for c in d:
             acc = acc * base + c
         return acc
-    n2 = 1
-    while n2 < n:
-        n2 <<= 1
     x = int.from_bytes(d, 'big')
+    for shift, mask, mult in _merge_plan(1 << (n - 1).bit_length(), base):
+        x = ((x >> shift) & mask) * mult + (x & mask)
+    return x
+
+
+@lru_cache(maxsize=4096)
+def _merge_plan(n2: int, base: int):
+    plan = []
     w = 1
     mult = base
     while w < n2:
         mask = int.from_bytes(
             (b'\0' * w + b'\xff' * w) * (n2 // (2 * w)), 'big')
-        x = ((x >> (8 * w)) & mask) * mult + (x & mask)
+        plan.append((8 * w, mask, mult))
         mult *= mult
         w <<= 1
-    return x
+    return tuple(plan)
 
 
 def b58encode(
@@ -207,7 +212,17 @@ def b58decode(
     v = v.lstrip(alphabet[0:1])
     newlen = len(v)
 
-    acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
+    base = len(alphabet)
+    if 2 <= base <= 255 and isinstance(v, (bytes, bytearray)):
+        digits = v.translate(_get_decode_table(alphabet, autofix))
+        bad = digits.find(255)
+        if bad >= 0:
+            raise ValueError(
+                "Invalid character {!r}".format(chr(v[bad]))
+            )
+        acc = _digits_to_int(digits, base)
+    else:
+        acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
 
     return acc.to_bytes(origlen - newlen + (acc.bit_length() + 7) // 8, 'big')
 
