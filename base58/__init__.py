@@ -220,6 +220,15 @@ def _dense_tail(x: int, s: int, tail) -> int:
     # Finish with dense pairwise merges of the few remaining lanes, so the
     # large multiplications do not carry the zero gaps between lanes.
     m = (1 << s) - 1
+    if len(tail) == 3:
+        # Eight lanes: merge unrolled, without list/zip overhead.
+        m1, m2, m3 = tail
+        lo = x & ((1 << 4 * s) - 1)
+        hi = x >> 4 * s
+        return ((((hi >> 3 * s) * m1 + (hi >> 2 * s & m)) * m2
+                 + ((hi >> s & m) * m1 + (hi & m))) * m3
+                + (((lo >> 3 * s) * m1 + (lo >> 2 * s & m)) * m2
+                   + ((lo >> s & m) * m1 + (lo & m))))
     lanes = [(x >> k) & m for k in range(s * ((1 << len(tail)) - 1), 0, -s)]
     lanes.append(x & m)
     for mult in tail:
