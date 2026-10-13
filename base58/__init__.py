@@ -107,12 +107,34 @@ def b58encode(
 
     origlen = len(v)
     v = v.lstrip(b'\0')
-    newlen = len(v)
-
-    acc = int.from_bytes(v, 'big')  # first byte is most significant
-
-    result = b58encode_int(acc, False, alphabet)
-    return alphabet[0:1] * (origlen - newlen) + result
+    i = int.from_bytes(v, 'big')  # first byte is most significant
+    info = _ENC_INFO.get(alphabet) if type(alphabet) is bytes else None
+    if info is None:
+        result = b58encode_int(i, False, alphabet)
+        if type(alphabet) is bytes and len(alphabet) > 1:
+            base = len(alphabet)
+            _ENC_INFO[alphabet] = (_get_base58_pair_table(alphabet), base,
+                                   base * base, base ** 4)
+    elif i:
+        pairs, base, b2, b4 = info
+        parts = []
+        append = parts.append
+        while i >= b4:
+            i, r = divmod(i, b4)
+            append(pairs[r % b2])
+            append(pairs[r // b2])
+        if i >= b2:
+            append(pairs[i % b2])
+            i //= b2
+        if i >= base:
+            append(pairs[i])
+        else:
+            append(alphabet[i:i+1])
+        parts.reverse()
+        result = b"".join(parts)
+    else:
+        result = b""
+    return alphabet[0:1] * (origlen - len(v)) + result
 
 
 @_memo
