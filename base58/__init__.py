@@ -225,20 +225,22 @@ def b58decode(
         info = cache.get(alphabet)
         if info is None and len(alphabet) < 255:
             base = len(alphabet)
+            pv = _pair_values(base)
+            b2 = base * base
             info = (_get_base58_translate_table(alphabet, bool(autofix)),
-                    base * base, base ** 4, _pair_values(base))
+                    b2 * b2, [x * b2 for x in pv], pv)
             cache[alphabet] = info
     if info is not None:
-        table, b2, b4, pv = info
+        table, b4, p2, pv = info
         digits = v.translate(table)
         if b'\xff' not in digits:
-            pad = -len(digits) % 4
+            pad = -len(digits) % 8
             if pad:
                 digits = b'\0' * pad + digits
             acc = 0
             it = iter(memoryview(digits).cast('H'))
-            for p, q in zip(it, it):
-                acc = acc * b4 + (pv[p] * b2 + pv[q])
+            for p, q, r, s in zip(it, it, it, it):
+                acc = (acc * b4 + (p2[p] + pv[q])) * b4 + (p2[r] + pv[s])
         else:
             acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
     else:
