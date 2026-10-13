@@ -213,6 +213,10 @@ def _digits_to_int(d: bytes, base: int) -> int:
         x = ((x >> shift) & hmask) * mult + (x & mask)
     if not tail:
         return x
+    return _dense_tail(x, s, tail)
+
+
+def _dense_tail(x: int, s: int, tail) -> int:
     # Finish with dense pairwise merges of the few remaining lanes, so the
     # large multiplications do not carry the zero gaps between lanes.
     m = (1 << s) - 1
@@ -239,11 +243,17 @@ def _merge_plan(n2: int, base: int):
     odd = base >> t
     # While 256**w - base**w is a single limb, merge in subtraction form:
     # x -= hi * (256**w - base**w) turns hi*256**w + lo into hi*base**w + lo.
+    # With the 2**(t*w) factor folded into shift and mask, the multiplier
+    # is 2**((8-t)*w) - odd**w.  This form saves one big-int operation per
+    # round, so use it while its multiplier needs no more 30-bit limbs than
+    # odd**w does.
     sub = []
-    while w < stop and (1 << 8 * w) - mult < (1 << 30):
+    while w < stop and (((1 << (8 - t) * w) - odd).bit_length() + 29) // 30 \
+            <= (odd.bit_length() + 29) // 30:
         mask = int.from_bytes(
             (b'\0' * w + b'\xff' * w) * (n2 // (2 * w)), 'big')
-        sub.append((8 * w, mask, (1 << 8 * w) - mult))
+        sub.append((8 * w - t * w, mask << (t * w),
+                    (1 << (8 - t) * w) - odd))
         odd *= odd
         mult *= mult
         w <<= 1
@@ -361,7 +371,22 @@ def b58decode(
             raise ValueError(
                 "Invalid character {!r}".format(chr(v[bad]))
             )
-        acc = _digits_to_int(digits, base)
+        n = len(digits)
+        if n <= 12:
+            acc = 0
+            for c in digits:
+                acc = acc * base + c
+        else:
+            # Same as _digits_to_int, inlined to save a call per decode.
+            acc = int.from_bytes(digits, 'big')
+            key = (1 << (n - 1).bit_length(), base)
+            sub, plan, s, tail = _plan_cache.get(key) or _merge_plan(*key)
+            for shift, mask, c in sub:
+                acc -= ((acc >> shift) & mask) * c
+            for shift, hmask, mult, mask in plan:
+                acc = ((acc >> shift) & hmask) * mult + (acc & mask)
+            if tail:
+                acc = _dense_tail(acc, s, tail)
     else:
         acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
 
