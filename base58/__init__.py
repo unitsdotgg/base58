@@ -205,25 +205,36 @@ def b58decode(
         if info is None and len(alphabet) < 255:
             base = len(alphabet)
             info = (_get_base58_translate_table(alphabet, bool(autofix)),
-                    base, base * base, base ** 3, base ** 4)
+                    base * base, base ** 4, _pair_values(base))
             cache[alphabet] = info
     if info is not None:
-        table, base, b2, b3, b4 = info
+        table, b2, b4, pv = info
         digits = v.translate(table)
         if b'\xff' not in digits:
             pad = -len(digits) % 4
             if pad:
                 digits = b'\0' * pad + digits
             acc = 0
-            it = iter(digits)
-            for a, b, c, d in zip(it, it, it, it):
-                acc = acc * b4 + (a * b3 + b * b2 + c * base + d)
+            it = iter(memoryview(digits).cast('H'))
+            for p, q in zip(it, it):
+                acc = acc * b4 + (pv[p] * b2 + pv[q])
         else:
             acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
     else:
         acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
 
     return acc.to_bytes(nzeros + (acc.bit_length() + 7) // 8, 'big')
+
+
+def _pair_values(base: int) -> list:
+    # Map a native 16-bit word holding two digit bytes to its 2-digit value.
+    little = memoryview(b'\x01\x00').cast('H')[0] == 1
+    pv = [0] * (256 * base)
+    for a in range(base):
+        for b in range(base):
+            key = a | (b << 8) if little else (a << 8) | b
+            pv[key] = a * base + b
+    return pv
 
 
 _DECODE_INFO: dict = {}
