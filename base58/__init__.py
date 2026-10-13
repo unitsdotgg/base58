@@ -98,15 +98,20 @@ def b58encode_int(
                 if _BIG_ENDIAN_HOST:
                     arr.byteswap()
                 x = int.from_bytes(arr.tobytes(), 'little')
-                k18 = int.from_bytes(b'\xff\xff\x03\0\0\0\0\0' * n, 'little')
+                # Lane masks are cached at a capacity >= n: every masked
+                # value is already < 2**(64*n), so a longer mask is
+                # harmless; only the OR constant is cut to 64*n bits.
+                c = _vec_masks
+                if n > c[0]:
+                    _grow_vec_masks(n)
+                k18 = c[1]
                 q1 = ((x * m5) >> 42) & k18
                 lo = x - q1 * sq
                 q2 = ((q1 * m5) >> 42) & k18
                 p = lo | ((q1 - q2 * sq) << 32)
-                q = ((p * m2) >> 20) & int.from_bytes(
-                    b'\xff\0\0\0' * (2 * n), 'little')
-                f = (p - q * base) | (q << 8) | (q2 << 48) | int.from_bytes(
-                    b'\0\0\xff\xff\0\0\0\xff' * n, 'little')
+                q = ((p * m2) >> 20) & c[2]
+                f = (p - q * base) | (q << 8) | (q2 << 48) | (
+                    c[3] & ((1 << (n << 6)) - 1))
                 return f.to_bytes(8 * n, 'big').translate(
                     tbl, b'\xff').lstrip(alphabet[0:1])
             while i:
@@ -146,6 +151,20 @@ def _get_encode_table(alphabet: bytes):
 
 
 _BIG_ENDIAN_HOST = sys.byteorder != 'little'
+
+# [capacity in 64-bit lanes, k18 mask, low-byte mask, OR constant]
+_vec_masks = [0, 0, 0, 0]
+
+
+def _grow_vec_masks(n: int) -> None:
+    m = max(n, 2 * _vec_masks[0], 64)
+    frm = int.from_bytes
+    _vec_masks[:] = [
+        m,
+        frm(b'\xff\xff\x03\0\0\0\0\0' * m, 'little'),
+        frm(b'\xff\0\0\0' * (2 * m), 'little'),
+        frm(b'\0\0\xff\xff\0\0\0\xff' * m, 'little'),
+    ]
 
 
 @_memo
