@@ -118,18 +118,17 @@ def b58encode(
     elif i:
         pairs, base, b2, b4 = info
         parts = []
-        append = parts.append
         while i >= b4:
             i, r = divmod(i, b4)
-            append(pairs[r % b2])
-            append(pairs[r // b2])
+            parts.append(pairs[r % b2])
+            parts.append(pairs[r // b2])
         if i >= b2:
-            append(pairs[i % b2])
+            parts.append(pairs[i % b2])
             i //= b2
         if i >= base:
-            append(pairs[i])
+            parts.append(pairs[i])
         else:
-            append(alphabet[i:i+1])
+            parts.append(alphabet[i:i+1])
         parts.reverse()
         result = b"".join(parts)
     else:
@@ -286,18 +285,17 @@ def b58encode_check(
     elif i:
         pairs, base, b2, b4 = info
         parts = []
-        append = parts.append
         while i >= b4:
             i, r = divmod(i, b4)
-            append(pairs[r % b2])
-            append(pairs[r // b2])
+            parts.append(pairs[r % b2])
+            parts.append(pairs[r // b2])
         if i >= b2:
-            append(pairs[i % b2])
+            parts.append(pairs[i % b2])
             i //= b2
         if i >= base:
-            append(pairs[i])
+            parts.append(pairs[i])
         else:
-            append(alphabet[i:i+1])
+            parts.append(alphabet[i:i+1])
         parts.reverse()
         result = b"".join(parts)
     else:
