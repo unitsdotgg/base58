@@ -56,6 +56,20 @@ def b58encode_int(
         return string
     parts = []
     append = parts.append
+    if i.bit_length() > 16384:
+        cube = sq * base
+        big5 = big * base
+        if big5 < 1 << 30:
+            chars = _get_char_table(alphabet)
+            while i:
+                i, r = divmod(i, big5)
+                hi, r = divmod(r, cube)
+                mid, lo = divmod(r, base)
+                append(chars[lo])
+                append(pairs[mid])
+                append(pairs[hi])
+            parts.reverse()
+            return b''.join(parts).lstrip(alphabet[0:1])
     while i:
         i, r = divmod(i, big)
         hi, lo = divmod(r, sq)
@@ -73,6 +87,11 @@ def _get_encode_table(alphabet: bytes):
     if alphabet[0] in alphabet[1:]:
         pairs = None
     return pairs, sq, sq * sq
+
+
+@lru_cache()
+def _get_char_table(alphabet: bytes):
+    return [alphabet[j:j+1] for j in range(len(alphabet))]
 
 
 @lru_cache()
