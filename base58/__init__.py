@@ -172,7 +172,7 @@ def _digits_to_int(d: bytes, base: int) -> int:
     # Finish with dense pairwise merges of the few remaining lanes, so the
     # large multiplications do not carry the zero gaps between lanes.
     m = (1 << s) - 1
-    lanes = [(x >> k) & m for k in range(s * 7, 0, -s)]
+    lanes = [(x >> k) & m for k in range(s * ((1 << len(tail)) - 1), 0, -s)]
     lanes.append(x & m)
     for mult in tail:
         it = iter(lanes)
@@ -185,7 +185,9 @@ def _merge_plan(n2: int, base: int):
     plan = []
     w = 1
     mult = base
-    stop = n2 // 8 if n2 >= 2048 else n2
+    # Number of lanes finished by dense pairwise merges.
+    lanes = 16 if n2 >= 2048 else 8 if n2 >= 512 else 1
+    stop = n2 // lanes
     while w < stop:
         mask = int.from_bytes(
             (b'\0' * w + b'\xff' * w) * (n2 // (2 * w)), 'big')
