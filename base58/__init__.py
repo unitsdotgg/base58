@@ -12,11 +12,29 @@ with the bitcoin network.
 from __future__ import annotations
 
 import sys
-from array import array
-from functools import lru_cache
 
 # hashlib (OpenSSL) and typing are costly to import and are only needed by
 # the checksum helpers and by annotations, so they are loaded on demand.
+# functools (which pulls in collections) is replaced by a tiny memo, and
+# array is only imported by the long-input encode path.
+
+
+def _memo(f):
+    cache = {}
+
+    def wrapper(*args, **kw):
+        key = (args, tuple(kw.items())) if kw else args
+        try:
+            return cache[key]
+        except KeyError:
+            r = cache[key] = f(*args, **kw)
+            return r
+    # Hot callers read wrapper.cache directly with a positional-args key.
+    wrapper.cache = cache
+    wrapper.__wrapped__ = f
+    wrapper.__name__ = f.__name__
+    wrapper.__doc__ = f.__doc__
+    return wrapper
 
 __version__ = '2.1.1'
 
@@ -64,6 +82,7 @@ def b58encode_int(
     if i.bit_length() > 512:
         vec = _get_encode_vec(alphabet)
         if vec is not None:
+            from array import array
             # Collect base**4 remainders, then split all of them at once:
             # 64-bit lanes hold r < 2**24; floor division by sq and base is
             # done per lane with exact multiply-shift reciprocals.
@@ -116,7 +135,7 @@ def b58encode_int(
     return b''.join(parts).lstrip(alphabet[0:1])
 
 
-@lru_cache()
+@_memo
 def _get_encode_table(alphabet: bytes):
     chars = [alphabet[j:j+1] for j in range(len(alphabet))]
     pairs = [a + b for a in chars for b in chars]
@@ -129,7 +148,7 @@ def _get_encode_table(alphabet: bytes):
 _BIG_ENDIAN_HOST = sys.byteorder != 'little'
 
 
-@lru_cache()
+@_memo
 def _get_encode_vec(alphabet: bytes):
     # Lane bounds need base <= 64: r < base**4 <= 2**24, base**2 <= 4096.
     # With M = ceil(2**s / d) and e = M*d - 2**s < d, floor(r*M >> s) is
@@ -150,7 +169,7 @@ def _get_encode_vec(alphabet: bytes):
     return m1, m2, alphabet + bytes(256 - base), big5, m5
 
 
-@lru_cache()
+@_memo
 def _get_decode_table(alphabet: bytes, autofix: bool):
     invmap = _get_base58_decode_map(alphabet, autofix=autofix)
     tbl = bytearray(b'\xff' * 256)
@@ -167,7 +186,8 @@ def _digits_to_int(d: bytes, base: int) -> int:
             acc = acc * base + c
         return acc
     x = int.from_bytes(d, 'big')
-    plan, s, tail = _merge_plan(1 << (n - 1).bit_length(), base)
+    key = (1 << (n - 1).bit_length(), base)
+    plan, s, tail = _plan_cache.get(key) or _merge_plan(*key)
     for shift, mask, mult in plan:
         x = ((x >> shift) & mask) * mult + (x & mask)
     if not tail:
@@ -183,7 +203,7 @@ def _digits_to_int(d: bytes, base: int) -> int:
     return lanes[0]
 
 
-@lru_cache(maxsize=4096)
+@_memo
 def _merge_plan(n2: int, base: int):
     plan = []
     w = 1
@@ -205,13 +225,18 @@ def _merge_plan(n2: int, base: int):
     return tuple(plan), 8 * stop, tuple(tail)
 
 
+_plan_cache = _merge_plan.cache
+_table_cache = _get_decode_table.cache
+
+
 def b58encode(
     v: Union[str, bytes], alphabet: bytes = BITCOIN_ALPHABET
 ) -> bytes:
     """
     Encode a string using Base58
     """
-    v = scrub_input(v)
+    if isinstance(v, str):
+        v = v.encode('ascii')
 
     origlen = len(v)
     v = v.lstrip(b'\0')
@@ -223,7 +248,7 @@ def b58encode(
     return alphabet[0:1] * (origlen - newlen) + result
 
 
-@lru_cache()
+@_memo
 def _get_base58_decode_map(alphabet: bytes,
                            autofix: bool) -> Mapping[int, int]:
     invmap = {char: index for index, char in enumerate(alphabet)}
@@ -248,11 +273,13 @@ def b58decode_int(
     """
     if b' ' not in alphabet:
         v = v.rstrip()
-    v = scrub_input(v)
+    if isinstance(v, str):
+        v = v.encode('ascii')
 
     base = len(alphabet)
     if 2 <= base <= 255 and isinstance(v, (bytes, bytearray)):
-        digits = v.translate(_get_decode_table(alphabet, autofix))
+        digits = v.translate(_table_cache.get((alphabet, autofix)) or
+                             _get_decode_table(alphabet, autofix))
         bad = digits.find(255)
         if bad >= 0:
             raise ValueError(
@@ -281,7 +308,8 @@ def b58decode(
     Decode a Base58 encoded string
     """
     v = v.rstrip()
-    v = scrub_input(v)
+    if isinstance(v, str):
+        v = v.encode('ascii')
 
     origlen = len(v)
     v = v.lstrip(alphabet[0:1])
@@ -289,7 +317,8 @@ def b58decode(
 
     base = len(alphabet)
     if 2 <= base <= 255 and isinstance(v, (bytes, bytearray)):
-        digits = v.translate(_get_decode_table(alphabet, autofix))
+        digits = v.translate(_table_cache.get((alphabet, autofix)) or
+                             _get_decode_table(alphabet, autofix))
         bad = digits.find(255)
         if bad >= 0:
             raise ValueError(
