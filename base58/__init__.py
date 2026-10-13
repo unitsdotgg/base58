@@ -331,15 +331,17 @@ def b58decode_check(
         info = _CHECK_INFO.get(key)
         if info is None and len(alphabet) < 255:
             base = len(alphabet)
+            pv = _pair_values(base)
             info = (_get_base58_translate_table(alphabet, bool(autofix)),
-                    base ** 2, base ** 4, base ** 8, _pair_values(base))
+                    base ** 4, [x * base * base for x in pv], pv)
             _CHECK_INFO[key] = info
     elif isinstance(alphabet, bytes) and len(alphabet) < 255:
         base = len(alphabet)
+        pv = _pair_values(base)
         info = (_get_base58_translate_table(alphabet, autofix),
-                base ** 2, base ** 4, base ** 8, _pair_values(base))
+                base ** 4, [x * base * base for x in pv], pv)
     if info is not None:
-        table, b2, b4, b8, pv = info
+        table, b4, p2, pv = info
         digits = v.translate(table)
         if b'\xff' not in digits:
             pad = -len(digits) % 8
@@ -348,8 +350,7 @@ def b58decode_check(
             acc = 0
             it = iter(memoryview(digits).cast('H'))
             for p, q, r, s in zip(it, it, it, it):
-                acc = acc * b8 + (
-                    (pv[p] * b2 + pv[q]) * b4 + pv[r] * b2 + pv[s])
+                acc = (acc * b4 + (p2[p] + pv[q])) * b4 + (p2[r] + pv[s])
     if acc < 0:
         acc = b58decode_int(v, alphabet, autofix=autofix)
     result = acc.to_bytes(nz + (acc.bit_length() + 7) // 8, 'big')
