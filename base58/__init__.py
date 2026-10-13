@@ -4,6 +4,8 @@ Implementations of Base58 and Base58Check encodings that are compatible
 with the bitcoin network.
 '''
 
+from __future__ import annotations
+
 # This module is based upon base58 snippets found scattered over many bitcoin
 # tools written in python. From what I gather the original source is from a
 # forum post by Gavin Andresen, so direct your praise to him.
@@ -11,7 +13,6 @@ with the bitcoin network.
 
 from functools import lru_cache
 from hashlib import sha256
-from typing import Mapping, Union
 
 __version__ = '2.1.1'
 
