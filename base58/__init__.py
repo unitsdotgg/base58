@@ -257,19 +257,25 @@ def b58decode(
             pv = _pair_values(base)
             b2 = base * base
             info = (_get_base58_translate_table(alphabet, bool(autofix)),
-                    b2 * b2, [x * b2 for x in pv], pv)
+                    b2 * b2, [x * b2 for x in pv], pv, _lane_plans(base))
             cache[alphabet] = info
     if info is not None:
-        table, b4, p2, pv = info
+        table, b4, p2, pv, plans = info
         digits = v.translate(table)
-        if b'\xff' not in digits:
+        if b'\xff' in digits:
+            acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
+        elif len(digits) <= _LANE_MAX:
+            # Combine all digits at once: neighbouring lanes are merged in
+            # log2(n) rounds of whole-integer mask/shift/multiply.
+            acc = int.from_bytes(digits, 'big')
+            for w, m, b in plans[(len(digits) - 1).bit_length()]:
+                acc = (acc >> w & m) * b + (acc & m)
+        else:
             digits = _ZPAD8[len(digits) & 7] + digits
             acc = 0
             it = iter(memoryview(digits).cast('H'))
             for p, q, r, s in zip(it, it, it, it):
                 acc = (acc * b4 + (p2[p] + pv[q])) * b4 + (p2[r] + pv[s])
-        else:
-            acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
     else:
         acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
 
@@ -288,6 +294,26 @@ def _pair_values(base: int) -> list:
         else:
             pv[x << 8:(x << 8) + base] = range(x * base, x * base + base)
     return pv
+
+
+_LANE_MAX = 1 << 12
+
+
+def _lane_plans(base: int) -> list:
+    # plans[R] merges 2**R digit bytes (big endian integer, one digit per
+    # byte) into their base-`base` value: round j joins pairs of lanes of
+    # 2**j bytes, the upper lane being the more significant one.
+    plans = [()]
+    for r in range(1, 13):
+        n = 1 << r
+        steps = []
+        for j in range(r):
+            wb = 1 << j
+            m = int.from_bytes((b'\xff' * wb + b'\0' * wb) * (n >> (j + 1)),
+                               'little')
+            steps.append((8 * wb, m, base ** wb))
+        plans.append(tuple(steps))
+    return plans
 
 
 _DECODE_INFO: dict = {}
@@ -364,7 +390,8 @@ def b58decode_check(
             base = len(alphabet)
             pv = _pair_values(base)
             info = (_get_base58_translate_table(alphabet, bool(autofix)),
-                    base ** 4, [x * base * base for x in pv], pv)
+                    base ** 4, [x * base * base for x in pv], pv,
+                    _lane_plans(base))
             cache[alphabet] = info
     elif not isinstance(alphabet, bytes) or len(alphabet) >= 255:
         info = None
@@ -372,14 +399,19 @@ def b58decode_check(
         base = len(alphabet)
         pv = _pair_values(base)
         info = (_get_base58_translate_table(alphabet, autofix),
-                base ** 4, [x * base * base for x in pv], pv)
+                base ** 4, [x * base * base for x in pv], pv,
+                _lane_plans(base))
     if info is None:
         acc = b58decode_int(v, alphabet, autofix=autofix)
     else:
-        table, b4, p2, pv = info
+        table, b4, p2, pv, plans = info
         digits = v.translate(table)
         if b'\xff' in digits:
             acc = b58decode_int(v, alphabet, autofix=autofix)
+        elif len(digits) <= _LANE_MAX:
+            acc = int.from_bytes(digits, 'big')
+            for w, m, b in plans[(len(digits) - 1).bit_length()]:
+                acc = (acc >> w & m) * b + (acc & m)
         else:
             digits = _ZPAD8[len(digits) & 7] + digits
             acc = 0
