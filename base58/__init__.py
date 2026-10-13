@@ -248,29 +248,30 @@ def b58decode(
     v = v.lstrip(alphabet[0:1])
     nzeros = origlen - len(v)
 
-    info = None
-    if isinstance(v, bytes) and type(alphabet) is bytes:
-        cache = _DECODE_INFO_AF if autofix else _DECODE_INFO
-        info = cache.get(alphabet)
-        if info is None and len(alphabet) < 255:
-            base = len(alphabet)
-            pv = _pair_values(base)
-            b2 = base * base
-            info = (_get_base58_translate_table(alphabet, bool(autofix)),
-                    b2 * b2, [x * b2 for x in pv], pv, _lane_plans(base))
-            cache[alphabet] = info
+    info = ((_DECODE_INFO_AF if autofix else _DECODE_INFO).get(alphabet)
+            if type(alphabet) is bytes else None)
+    if info is None and type(alphabet) is bytes and len(alphabet) < 255:
+        base = len(alphabet)
+        pv = _pair_values(base)
+        b2 = base * base
+        info = (_get_base58_translate_table(alphabet, bool(autofix)),
+                _lane_plans(base), b2 * b2, [x * b2 for x in pv], pv)
+        (_DECODE_INFO_AF if autofix else _DECODE_INFO)[alphabet] = info
     if info is not None:
-        table, b4, p2, pv, plans = info
-        digits = v.translate(table)
+        digits = v.translate(info[0])
+        n = len(digits)
         if b'\xff' in digits:
             acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
-        elif len(digits) <= _LANE_MAX:
+        elif n <= 4096:  # _LANE_MAX
             # Combine all digits at once: neighbouring lanes are merged in
             # log2(n) rounds of whole-integer mask/shift/multiply.
             acc = int.from_bytes(digits, 'big')
-            for w, m, b in plans[(len(digits) - 1).bit_length()]:
-                acc = (acc >> w & m) * b + (acc & m)
+            steps, w, c = info[1][(n - 1).bit_length()]
+            for s, m, k in steps:
+                acc -= (acc >> s & m) * k
+            acc -= (acc >> w) * c
         else:
+            _, _, b4, p2, pv = info
             digits = _ZPAD8[len(digits) & 7] + digits
             acc = 0
             it = iter(memoryview(digits).cast('H'))
@@ -303,16 +304,21 @@ def _lane_plans(base: int) -> list:
     # plans[R] merges 2**R digit bytes (big endian integer, one digit per
     # byte) into their base-`base` value: round j joins pairs of lanes of
     # 2**j bytes, the upper lane being the more significant one.
-    plans = [()]
+    # Each plan is (masked steps, w, c) where the final step joins the only
+    # remaining pair and needs no mask.
+    plans = [((), 0, 0)]
     for r in range(1, 13):
         n = 1 << r
         steps = []
-        for j in range(r):
+        for j in range(r - 1):
             wb = 1 << j
             m = int.from_bytes((b'\xff' * wb + b'\0' * wb) * (n >> (j + 1)),
                                'little')
-            steps.append((8 * wb, m, base ** wb))
-        plans.append(tuple(steps))
+            # Pair value hi * 256**wb + lo becomes hi * base**wb + lo by
+            # subtracting hi * (256**wb - base**wb); no borrow crosses pairs.
+            steps.append((8 * wb, m, (1 << (8 * wb)) - base ** wb))
+        wb = 1 << (r - 1)
+        plans.append((tuple(steps), 8 * wb, (1 << (8 * wb)) - base ** wb))
     return plans
 
 
@@ -410,8 +416,10 @@ def b58decode_check(
             acc = b58decode_int(v, alphabet, autofix=autofix)
         elif len(digits) <= _LANE_MAX:
             acc = int.from_bytes(digits, 'big')
-            for w, m, b in plans[(len(digits) - 1).bit_length()]:
-                acc = (acc >> w & m) * b + (acc & m)
+            steps, w, c = plans[(len(digits) - 1).bit_length()]
+            for s, m, k in steps:
+                acc -= (acc >> s & m) * k
+            acc -= (acc >> w) * c
         else:
             digits = _ZPAD8[len(digits) & 7] + digits
             acc = 0
