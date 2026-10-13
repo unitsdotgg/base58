@@ -9,6 +9,8 @@ with the bitcoin network.
 # forum post by Gavin Andresen, so direct your praise to him.
 # This module adds shiny packaging and support for python3.
 
+import sys
+from array import array
 from functools import lru_cache
 from hashlib import sha256
 from typing import Mapping, Union
@@ -56,20 +58,30 @@ def b58encode_int(
         return string
     parts = []
     append = parts.append
-    if i.bit_length() > 16384:
-        cube = sq * base
-        big5 = big * base
-        if big5 < 1 << 30:
-            chars = _get_char_table(alphabet)
+    if i.bit_length() > 512:
+        vec = _get_encode_vec(alphabet)
+        if vec is not None:
+            # Collect base**4 remainders, then split all of them at once:
+            # 64-bit lanes hold r < 2**24; floor division by sq and base is
+            # done per lane with exact multiply-shift reciprocals.
+            m1, m2, tbl = vec
             while i:
-                i, r = divmod(i, big5)
-                hi, r = divmod(r, cube)
-                mid, lo = divmod(r, base)
-                append(chars[lo])
-                append(pairs[mid])
-                append(pairs[hi])
-            parts.reverse()
-            return b''.join(parts).lstrip(alphabet[0:1])
+                i, r = divmod(i, big)
+                append(r)
+            n = len(parts)
+            arr = array('Q', parts)
+            if _BIG_ENDIAN_HOST:
+                arr.byteswap()
+            x = int.from_bytes(arr.tobytes(), 'little')
+            h = ((x * m1) >> 40) & int.from_bytes(
+                b'\xff\x0f\0\0\0\0\0\0' * n, 'little')
+            v = (x - h * sq) | (h << 32)
+            q = ((v * m2) >> 20) & int.from_bytes(
+                b'\xff\0\0\0' * (2 * n), 'little')
+            f = (q << 8) | (v - q * base) | int.from_bytes(
+                b'\0\0\xff\xff' * (2 * n), 'little')
+            return f.to_bytes(8 * n, 'big').translate(
+                tbl, b'\xff').lstrip(alphabet[0:1])
     while i:
         i, r = divmod(i, big)
         hi, lo = divmod(r, sq)
@@ -89,9 +101,22 @@ def _get_encode_table(alphabet: bytes):
     return pairs, sq, sq * sq
 
 
+_BIG_ENDIAN_HOST = sys.byteorder != 'little'
+
+
 @lru_cache()
-def _get_char_table(alphabet: bytes):
-    return [alphabet[j:j+1] for j in range(len(alphabet))]
+def _get_encode_vec(alphabet: bytes):
+    # Lane bounds need base <= 64: r < base**4 <= 2**24, base**2 <= 4096.
+    # With M = ceil(2**s / d) and e = M*d - 2**s < d, floor(r*M >> s) is
+    # floor(r / d) whenever r*e < 2**s, which holds for s=40 (stage 1,
+    # r < 2**24, d <= 4096) and s=20 (stage 2, v < 4096, d <= 64).
+    base = len(alphabet)
+    if base > 64 or not isinstance(alphabet, bytes):
+        return None
+    sq = base * base
+    m1 = -(-(1 << 40) // sq)
+    m2 = -(-(1 << 20) // base)
+    return m1, m2, alphabet + bytes(256 - base)
 
 
 @lru_cache()
