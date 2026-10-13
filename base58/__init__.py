@@ -64,7 +64,29 @@ def b58encode_int(
             # Collect base**4 remainders, then split all of them at once:
             # 64-bit lanes hold r < 2**24; floor division by sq and base is
             # done per lane with exact multiply-shift reciprocals.
-            m1, m2, tbl = vec
+            m1, m2, tbl, big5, m5 = vec
+            if big5:
+                # base**5 < 2**30 is still a single-limb divisor: 20% fewer
+                # whole-number division passes. 64-bit lanes hold r < 2**30.
+                while i:
+                    i, r = divmod(i, big5)
+                    append(r)
+                n = len(parts)
+                arr = array('Q', parts)
+                if _BIG_ENDIAN_HOST:
+                    arr.byteswap()
+                x = int.from_bytes(arr.tobytes(), 'little')
+                k18 = int.from_bytes(b'\xff\xff\x03\0\0\0\0\0' * n, 'little')
+                q1 = ((x * m5) >> 42) & k18
+                lo = x - q1 * sq
+                q2 = ((q1 * m5) >> 42) & k18
+                p = lo | ((q1 - q2 * sq) << 32)
+                q = ((p * m2) >> 20) & int.from_bytes(
+                    b'\xff\0\0\0' * (2 * n), 'little')
+                f = (p - q * base) | (q << 8) | (q2 << 48) | int.from_bytes(
+                    b'\0\0\xff\xff\0\0\0\xff' * n, 'little')
+                return f.to_bytes(8 * n, 'big').translate(
+                    tbl, b'\xff').lstrip(alphabet[0:1])
             while i:
                 i, r = divmod(i, big)
                 append(r)
@@ -116,7 +138,13 @@ def _get_encode_vec(alphabet: bytes):
     sq = base * base
     m1 = -(-(1 << 40) // sq)
     m2 = -(-(1 << 20) // base)
-    return m1, m2, alphabet + bytes(256 - base)
+    # 5-digit lanes (41 <= base, base**5 < 2**30): stage s=42 splits r by
+    # base**2 exactly (r < 2**30, e < 2**12) and r*m5 < 2**62 stays in-lane.
+    big5 = m5 = 0
+    if base >= 41 and base ** 5 < (1 << 30):
+        big5 = base ** 5
+        m5 = -(-(1 << 42) // sq)
+    return m1, m2, alphabet + bytes(256 - base), big5, m5
 
 
 @lru_cache()
