@@ -206,9 +206,11 @@ def _digits_to_int(d: bytes, base: int) -> int:
         return acc
     x = int.from_bytes(d, 'big')
     key = (1 << (n - 1).bit_length(), base)
-    plan, s, tail = _plan_cache.get(key) or _merge_plan(*key)
-    for shift, mask, mult in plan:
-        x = ((x >> shift) & mask) * mult + (x & mask)
+    sub, plan, s, tail = _plan_cache.get(key) or _merge_plan(*key)
+    for shift, mask, c in sub:
+        x -= ((x >> shift) & mask) * c
+    for shift, hmask, mult, mask in plan:
+        x = ((x >> shift) & hmask) * mult + (x & mask)
     if not tail:
         return x
     # Finish with dense pairwise merges of the few remaining lanes, so the
@@ -230,10 +232,26 @@ def _merge_plan(n2: int, base: int):
     # Number of lanes finished by dense pairwise merges.
     lanes = 16 if n2 >= 2048 else 8 if n2 >= 512 else 1
     stop = n2 // lanes
+    # base = odd * 2**t: the 2**(t*w) factor of base**w is folded into a
+    # shorter shift and a pre-shifted mask, so each round multiplies by the
+    # smaller odd**w ((x >> s & m) << k == x >> (s - k) & (m << k), k < s).
+    t = (base & -base).bit_length() - 1
+    odd = base >> t
+    # While 256**w - base**w is a single limb, merge in subtraction form:
+    # x -= hi * (256**w - base**w) turns hi*256**w + lo into hi*base**w + lo.
+    sub = []
+    while w < stop and (1 << 8 * w) - mult < (1 << 30):
+        mask = int.from_bytes(
+            (b'\0' * w + b'\xff' * w) * (n2 // (2 * w)), 'big')
+        sub.append((8 * w, mask, (1 << 8 * w) - mult))
+        odd *= odd
+        mult *= mult
+        w <<= 1
     while w < stop:
         mask = int.from_bytes(
             (b'\0' * w + b'\xff' * w) * (n2 // (2 * w)), 'big')
-        plan.append((8 * w, mask, mult))
+        plan.append((8 * w - t * w, mask << (t * w), odd, mask))
+        odd *= odd
         mult *= mult
         w <<= 1
     tail = []
@@ -241,7 +259,7 @@ def _merge_plan(n2: int, base: int):
         tail.append(mult)
         mult *= mult
         w <<= 1
-    return tuple(plan), 8 * stop, tuple(tail)
+    return tuple(sub), tuple(plan), 8 * stop, tuple(tail)
 
 
 _plan_cache = _merge_plan.cache
