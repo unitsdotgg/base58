@@ -56,12 +56,15 @@ def b58encode_int(
         append = parts.append
         while i >= b4:
             i, r = divmod(i, b4)
-            hi, lo = divmod(r, b2)
-            append(pairs[lo])
-            append(pairs[hi])
-        while i:
-            i, idx = divmod(i, base)
-            append(alphabet[idx:idx+1])
+            append(pairs[r % b2])
+            append(pairs[r // b2])
+        if i >= b2:
+            append(pairs[i % b2])
+            i //= b2
+        if i >= base:
+            append(pairs[i])
+        else:
+            append(alphabet[i:i+1])
         parts.reverse()
         return b"".join(parts)
     while i:
@@ -76,15 +79,16 @@ def b58encode(
     """
     Encode a string using Base58
     """
-    v = scrub_input(v)
+    if isinstance(v, str):
+        v = v.encode('ascii')
 
     origlen = len(v)
     v = v.lstrip(b'\0')
     newlen = len(v)
 
-    acc = int.from_bytes(v, byteorder='big')  # first byte is most significant
+    acc = int.from_bytes(v, 'big')  # first byte is most significant
 
-    result = b58encode_int(acc, default_one=False, alphabet=alphabet)
+    result = b58encode_int(acc, False, alphabet)
     return alphabet[0:1] * (origlen - newlen) + result
 
 
