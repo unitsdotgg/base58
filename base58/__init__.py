@@ -111,9 +111,20 @@ def _digits_to_int(d: bytes, base: int) -> int:
             acc = acc * base + c
         return acc
     x = int.from_bytes(d, 'big')
-    for shift, mask, mult in _merge_plan(1 << (n - 1).bit_length(), base):
+    plan, s, tail = _merge_plan(1 << (n - 1).bit_length(), base)
+    for shift, mask, mult in plan:
         x = ((x >> shift) & mask) * mult + (x & mask)
-    return x
+    if not tail:
+        return x
+    # Finish with dense pairwise merges of the few remaining lanes, so the
+    # large multiplications do not carry the zero gaps between lanes.
+    m = (1 << s) - 1
+    lanes = [(x >> k) & m for k in range(s * 7, 0, -s)]
+    lanes.append(x & m)
+    for mult in tail:
+        it = iter(lanes)
+        lanes = [a * mult + b for a, b in zip(it, it)]
+    return lanes[0]
 
 
 @lru_cache(maxsize=4096)
@@ -121,13 +132,19 @@ def _merge_plan(n2: int, base: int):
     plan = []
     w = 1
     mult = base
-    while w < n2:
+    stop = n2 // 8 if n2 >= 2048 else n2
+    while w < stop:
         mask = int.from_bytes(
             (b'\0' * w + b'\xff' * w) * (n2 // (2 * w)), 'big')
         plan.append((8 * w, mask, mult))
         mult *= mult
         w <<= 1
-    return tuple(plan)
+    tail = []
+    while w < n2:
+        tail.append(mult)
+        mult *= mult
+        w <<= 1
+    return tuple(plan), 8 * stop, tuple(tail)
 
 
 def b58encode(
