@@ -11,8 +11,30 @@ from __future__ import annotations
 # forum post by Gavin Andresen, so direct your praise to him.
 # This module adds shiny packaging and support for python3.
 
-from functools import lru_cache
-from hashlib import sha256
+
+def _memo(func):
+    # Minimal argument-keyed cache; avoids importing functools at load time.
+    cache: dict = {}
+
+    def wrapper(*args):
+        try:
+            return cache[args]
+        except KeyError:
+            result = cache[args] = func(*args)
+            return result
+    wrapper.__name__ = func.__name__
+    wrapper.__doc__ = func.__doc__
+    return wrapper
+
+# Prefer the interpreter's builtin SHA-256 module: it yields identical digests
+# and avoids loading OpenSSL through hashlib at import time.
+try:
+    from _sha2 import sha256
+except ImportError:
+    try:
+        from _sha256 import sha256
+    except ImportError:
+        from hashlib import sha256
 
 __version__ = '2.1.1'
 
@@ -33,7 +55,7 @@ def scrub_input(v: Union[str, bytes]) -> bytes:
     return v
 
 
-@lru_cache()
+@_memo
 def _get_base58_pair_table(alphabet: bytes) -> list:
     chars = [alphabet[k:k+1] for k in range(len(alphabet))]
     return [a + b for a in chars for b in chars]
@@ -93,7 +115,7 @@ def b58encode(
     return alphabet[0:1] * (origlen - newlen) + result
 
 
-@lru_cache()
+@_memo
 def _get_base58_decode_map(alphabet: bytes,
                            autofix: bool) -> Mapping[int, int]:
     invmap = {char: index for index, char in enumerate(alphabet)}
@@ -109,7 +131,7 @@ def _get_base58_decode_map(alphabet: bytes,
     return invmap
 
 
-@lru_cache()
+@_memo
 def _get_base58_translate_table(alphabet: bytes, autofix: bool) -> bytes:
     invmap = _get_base58_decode_map(alphabet, autofix)
     table = bytearray(b'\xff' * 256)
@@ -148,7 +170,7 @@ def b58decode_int(
                 decimal = decimal * b4 + (a * b3 + b * b2 + c * base + d)
             return decimal
 
-    map = _get_base58_decode_map(alphabet, autofix=autofix)
+    map = _get_base58_decode_map(alphabet, autofix)
 
     decimal = 0
     try:
