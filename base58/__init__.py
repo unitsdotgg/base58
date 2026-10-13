@@ -106,6 +106,35 @@ def b58encode(
     origlen = len(v)
     v = v.lstrip(b'\0')
     i = int.from_bytes(v, 'big')  # first byte is most significant
+    fast = _ENC8_INFO.get(alphabet) if type(alphabet) is bytes else None
+    if fast is not None:
+        if i:
+            # Peel 8 digits per iteration (two single-limb divisions so the
+            # divisor stays below one bignum digit), then the top digits.
+            pairs, base, b2, b4, b8 = fast
+            parts = []
+            while i >= b8:
+                i, r = divmod(i, b4)
+                i, s = divmod(i, b4)
+                parts += (pairs[r % b2], pairs[r // b2],
+                          pairs[s % b2], pairs[s // b2])
+            if i >= b4:
+                i, r = divmod(i, b4)
+                parts += (pairs[r % b2], pairs[r // b2])
+            if i >= b2:
+                parts.append(pairs[i % b2])
+                i //= b2
+            if i >= base:
+                parts.append(pairs[i])
+            else:
+                parts.append(alphabet[i:i+1])
+            parts.reverse()
+            result = b"".join(parts)
+        else:
+            result = b""
+        if origlen == len(v):
+            return result
+        return alphabet[0:1] * (origlen - len(v)) + result
     info = _ENC_INFO.get(alphabet) if type(alphabet) is bytes else None
     if info is None:
         result = b58encode_int(i, False, alphabet)
@@ -113,6 +142,8 @@ def b58encode(
             base = len(alphabet)
             _ENC_INFO[alphabet] = (_get_base58_pair_table(alphabet), base,
                                    base * base, base ** 4)
+            _ENC8_INFO[alphabet] = (_get_base58_pair_table(alphabet), base,
+                                    base * base, base ** 4, base ** 8)
     elif i:
         pairs, base, b2, b4 = info
         parts = []
@@ -309,6 +340,7 @@ def b58encode_check(
 
 
 _ENC_INFO: dict = {}
+_ENC8_INFO: dict = {}
 _CHECK_INFO: dict = {}
 _CHECK_INFO_AF: dict = {}
 
