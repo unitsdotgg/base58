@@ -242,8 +242,38 @@ def b58encode_check(
     v = v + sha256(sha256(v).digest()).digest()[:4]
     origlen = len(v)
     v = v.lstrip(b'\0')
-    result = b58encode_int(int.from_bytes(v, 'big'), False, alphabet)
+    i = int.from_bytes(v, 'big')
+    info = _ENC_INFO.get(alphabet) if type(alphabet) is bytes else None
+    if info is None:
+        result = b58encode_int(i, False, alphabet)
+        if type(alphabet) is bytes and len(alphabet) > 1:
+            base = len(alphabet)
+            _ENC_INFO[alphabet] = (_get_base58_pair_table(alphabet), base,
+                                   base * base, base ** 4)
+    elif i:
+        pairs, base, b2, b4 = info
+        parts = []
+        append = parts.append
+        while i >= b4:
+            i, r = divmod(i, b4)
+            append(pairs[r % b2])
+            append(pairs[r // b2])
+        if i >= b2:
+            append(pairs[i % b2])
+            i //= b2
+        if i >= base:
+            append(pairs[i])
+        else:
+            append(alphabet[i:i+1])
+        parts.reverse()
+        result = b"".join(parts)
+    else:
+        result = b""
     return alphabet[0:1] * (origlen - len(v)) + result
+
+
+_ENC_INFO: dict = {}
+_CHECK_INFO: dict = {}
 
 
 def b58decode_check(
@@ -258,21 +288,31 @@ def b58decode_check(
     origlen = len(v)
     v = v.lstrip(alphabet[0:1])
     nz = origlen - len(v)
-    base = len(alphabet)
     acc = -1
-    if isinstance(alphabet, bytes) and base < 255:
-        digits = v.translate(_get_base58_translate_table(alphabet, autofix))
+    info = None
+    if type(alphabet) is bytes:
+        key = (alphabet, bool(autofix))
+        info = _CHECK_INFO.get(key)
+        if info is None and len(alphabet) < 255:
+            base = len(alphabet)
+            info = (_get_base58_translate_table(alphabet, bool(autofix)),
+                    base, base ** 2, base ** 3, base ** 4, base ** 5)
+            _CHECK_INFO[key] = info
+    elif isinstance(alphabet, bytes) and len(alphabet) < 255:
+        base = len(alphabet)
+        info = (_get_base58_translate_table(alphabet, autofix),
+                base, base ** 2, base ** 3, base ** 4, base ** 5)
+    if info is not None:
+        table, base, b2, b3, b4, b5 = info
+        digits = v.translate(table)
         if b'\xff' not in digits:
-            pad = -len(digits) % 4
+            pad = -len(digits) % 5
             if pad:
                 digits = b'\0' * pad + digits
-            b2 = base * base
-            b3 = b2 * base
-            b4 = b3 * base
             acc = 0
             it = iter(digits)
-            for a, b, c, d in zip(it, it, it, it):
-                acc = acc * b4 + (a * b3 + b * b2 + c * base + d)
+            for a, b, c, d, e in zip(it, it, it, it, it):
+                acc = acc * b5 + (a * b4 + b * b3 + c * b2 + d * base + e)
     if acc < 0:
         acc = b58decode_int(v, alphabet, autofix=autofix)
     result = acc.to_bytes(nz + (acc.bit_length() + 7) // 8, 'big')
