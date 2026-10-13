@@ -229,6 +229,26 @@ def _dense_tail(x: int, s: int, tail) -> int:
                  + ((hi >> s & m) * m1 + (hi & m))) * m3
                 + (((lo >> 3 * s) * m1 + (lo >> 2 * s & m)) * m2
                    + ((lo >> s & m) * m1 + (lo & m))))
+    if len(tail) == 2:
+        m1, m2 = tail
+        hi = x >> 2 * s
+        return (((hi >> s) * m1 + (hi & m)) * m2
+                + ((x >> s & m) * m1 + (x & m)))
+    if len(tail) == 4:
+        # Sixteen lanes: two unrolled eight-lane halves.
+        m1, m2, m3, m4 = tail
+        return (_dense8(x >> 8 * s, s, m, m1, m2, m3) * m4
+                + _dense8(x & ((1 << 8 * s) - 1), s, m, m1, m2, m3))
+    if len(tail) == 5:
+        # Thirty-two lanes: four unrolled eight-lane quarters.
+        m1, m2, m3, m4, m5 = tail
+        q = (1 << 8 * s) - 1
+        hi = x >> 16 * s
+        lo = x & ((1 << 16 * s) - 1)
+        return ((_dense8(hi >> 8 * s, s, m, m1, m2, m3) * m4
+                 + _dense8(hi & q, s, m, m1, m2, m3)) * m5
+                + (_dense8(lo >> 8 * s, s, m, m1, m2, m3) * m4
+                   + _dense8(lo & q, s, m, m1, m2, m3)))
     lanes = [(x >> k) & m for k in range(s * ((1 << len(tail)) - 1), 0, -s)]
     lanes.append(x & m)
     for mult in tail:
@@ -237,13 +257,24 @@ def _dense_tail(x: int, s: int, tail) -> int:
     return lanes[0]
 
 
+def _dense8(x: int, s: int, m: int, m1: int, m2: int, m3: int) -> int:
+    # Eight lanes (x < 2**(8*s)): merge unrolled, without list/zip overhead.
+    lo = x & ((1 << 4 * s) - 1)
+    hi = x >> 4 * s
+    return ((((hi >> 3 * s) * m1 + (hi >> 2 * s & m)) * m2
+             + ((hi >> s & m) * m1 + (hi & m))) * m3
+            + (((lo >> 3 * s) * m1 + (lo >> 2 * s & m)) * m2
+               + ((lo >> s & m) * m1 + (lo & m))))
+
+
 @_memo
 def _merge_plan(n2: int, base: int):
     plan = []
     w = 1
     mult = base
     # Number of lanes finished by dense pairwise merges.
-    lanes = 16 if n2 >= 2048 else 8 if n2 >= 512 else 1
+    lanes = (32 if n2 >= 4096 else 16 if n2 >= 2048 else 8 if n2 >= 1024 else 4 if n2 >= 512
+             else 1)
     stop = n2 // lanes
     # base = odd * 2**t: the 2**(t*w) factor of base**w is folded into a
     # shorter shift and a pre-shifted mask, so each round multiplies by the
