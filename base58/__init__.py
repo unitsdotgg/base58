@@ -185,10 +185,14 @@ def b58encode_check(
     """
     Encode a string using Base58 with a 4 character checksum
     """
-    v = scrub_input(v)
+    if isinstance(v, str):
+        v = v.encode('ascii')
 
-    digest = sha256(sha256(v).digest()).digest()
-    return b58encode(v + digest[:4], alphabet=alphabet)
+    v = v + sha256(sha256(v).digest()).digest()[:4]
+    origlen = len(v)
+    v = v.lstrip(b'\0')
+    result = b58encode_int(int.from_bytes(v, 'big'), False, alphabet)
+    return alphabet[0:1] * (origlen - len(v)) + result
 
 
 def b58decode_check(
@@ -197,7 +201,30 @@ def b58decode_check(
 ) -> bytes:
     '''Decode and verify the checksum of a Base58 encoded string'''
 
-    result = b58decode(v, alphabet=alphabet, autofix=autofix)
+    v = v.rstrip()
+    if isinstance(v, str):
+        v = v.encode('ascii')
+    origlen = len(v)
+    v = v.lstrip(alphabet[0:1])
+    nz = origlen - len(v)
+    base = len(alphabet)
+    acc = -1
+    if isinstance(alphabet, bytes) and base < 255:
+        digits = v.translate(_get_base58_translate_table(alphabet, autofix))
+        if b'\xff' not in digits:
+            pad = -len(digits) % 4
+            if pad:
+                digits = b'\0' * pad + digits
+            b2 = base * base
+            b3 = b2 * base
+            b4 = b3 * base
+            acc = 0
+            it = iter(digits)
+            for a, b, c, d in zip(it, it, it, it):
+                acc = acc * b4 + (a * b3 + b * b2 + c * base + d)
+    if acc < 0:
+        acc = b58decode_int(v, alphabet, autofix=autofix)
+    result = acc.to_bytes(nz + (acc.bit_length() + 7) // 8, 'big')
     result, check = result[:-4], result[-4:]
     digest = sha256(sha256(result).digest()).digest()
 
