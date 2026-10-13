@@ -9,11 +9,14 @@ with the bitcoin network.
 # forum post by Gavin Andresen, so direct your praise to him.
 # This module adds shiny packaging and support for python3.
 
+from __future__ import annotations
+
 import sys
 from array import array
 from functools import lru_cache
-from hashlib import sha256
-from typing import Mapping, Union
+
+# hashlib (OpenSSL) and typing are costly to import and are only needed by
+# the checksum helpers and by annotations, so they are loaded on demand.
 
 __version__ = '2.1.1'
 
@@ -305,6 +308,7 @@ def b58encode_check(
     """
     Encode a string using Base58 with a 4 character checksum
     """
+    from hashlib import sha256
     v = scrub_input(v)
 
     digest = sha256(sha256(v).digest()).digest()
@@ -316,6 +320,7 @@ def b58decode_check(
     autofix: bool = False
 ) -> bytes:
     '''Decode and verify the checksum of a Base58 encoded string'''
+    from hashlib import sha256
 
     result = b58decode(v, alphabet=alphabet, autofix=autofix)
     result, check = result[:-4], result[-4:]
