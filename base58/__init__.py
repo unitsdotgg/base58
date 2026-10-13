@@ -204,16 +204,8 @@ def _digits_to_int(d: bytes, base: int) -> int:
         for c in d:
             acc = acc * base + c
         return acc
-    x = int.from_bytes(d, 'big')
     key = (1 << (n - 1).bit_length(), base)
-    sub, plan, s, tail = _plan_cache.get(key) or _merge_plan(*key)
-    for shift, mask, c in sub:
-        x -= ((x >> shift) & mask) * c
-    for shift, hmask, mult, mask in plan:
-        x = ((x >> shift) & hmask) * mult + (x & mask)
-    if not tail:
-        return x
-    return _dense_tail(x, s, tail)
+    return (_dec_cache.get(key) or _get_decoder(*key))(d)
 
 
 def _dense_tail(x: int, s: int, tail) -> int:
@@ -312,7 +304,50 @@ def _merge_plan(n2: int, base: int):
     return tuple(sub), tuple(plan), 8 * stop, tuple(tail)
 
 
+@_memo
+def _get_decoder(n2: int, base: int):
+    # Specialise the merge plan for (n2, base) into straight-line code, so a
+    # decode runs its rounds without loop, tuple-unpacking and lookup work.
+    sub, plan, s, tail = _merge_plan(n2, base)
+    t = (base & -base).bit_length() - 1
+    # In the final round (two lanes, no dense tail) the high mask is an
+    # identity when the low lane cannot reach the shifted bits.
+    free = not tail and base < (1 << (8 - t))
+    last = len(sub) + len(plan)
+    ns = {'D': _dense_tail, 'F': int.from_bytes}
+    body = ["x = F(d, 'big')"]
+    i = 0
+    for shift, mask, c in sub:
+        i += 1
+        ns['c%d' % i] = c
+        if free and i == last:
+            body.append('x -= (x >> %d) * c%d' % (shift, i))
+        else:
+            ns['h%d' % i] = mask
+            body.append('x -= (x >> %d & h%d) * c%d' % (shift, i, i))
+    for shift, hmask, mult, mask in plan:
+        i += 1
+        ns['c%d' % i] = mult
+        ns['m%d' % i] = mask
+        if free and i == last:
+            body.append('x = (x >> %d) * c%d + (x & m%d)' % (shift, i, i))
+        else:
+            ns['h%d' % i] = hmask
+            body.append('x = (x >> %d & h%d) * c%d + (x & m%d)'
+                        % (shift, i, i, i))
+    if tail:
+        ns['T'] = tail
+        body.append('return D(x, %d, T)' % s)
+    else:
+        body.append('return x')
+    params = ''.join(', %s=%s' % (k, k) for k in ns)
+    src = 'def f(d%s):\n    %s\n' % (params, '\n    '.join(body))
+    exec(src, ns)
+    return ns['f']
+
+
 _plan_cache = _merge_plan.cache
+_dec_cache = _get_decoder.cache
 _table_cache = _get_decode_table.cache
 
 
@@ -411,22 +446,14 @@ def b58decode(
             raise ValueError(
                 "Invalid character {!r}".format(chr(v[bad]))
             )
-        n = len(digits)
-        if n <= 12:
+        if newlen <= 12:
             acc = 0
             for c in digits:
                 acc = acc * base + c
         else:
             # Same as _digits_to_int, inlined to save a call per decode.
-            acc = int.from_bytes(digits, 'big')
-            key = (1 << (n - 1).bit_length(), base)
-            sub, plan, s, tail = _plan_cache.get(key) or _merge_plan(*key)
-            for shift, mask, c in sub:
-                acc -= ((acc >> shift) & mask) * c
-            for shift, hmask, mult, mask in plan:
-                acc = ((acc >> shift) & hmask) * mult + (acc & mask)
-            if tail:
-                acc = _dense_tail(acc, s, tail)
+            key = (1 << (newlen - 1).bit_length(), base)
+            acc = (_dec_cache.get(key) or _get_decoder(*key))(digits)
     else:
         acc = b58decode_int(v, alphabet=alphabet, autofix=autofix)
 
