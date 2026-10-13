@@ -4,8 +4,6 @@ Implementations of Base58 and Base58Check encodings that are compatible
 with the bitcoin network.
 '''
 
-from __future__ import annotations
-
 # This module is based upon base58 snippets found scattered over many bitcoin
 # tools written in python. From what I gather the original source is from a
 # forum post by Gavin Andresen, so direct your praise to him.
@@ -48,7 +46,7 @@ XRP_ALPHABET = RIPPLE_ALPHABET
 alphabet = BITCOIN_ALPHABET
 
 
-def scrub_input(v: Union[str, bytes]) -> bytes:
+def scrub_input(v: 'Union[str, bytes]') -> bytes:
     if isinstance(v, str):
         v = v.encode('ascii')
 
@@ -97,7 +95,7 @@ def b58encode_int(
 
 
 def b58encode(
-    v: Union[str, bytes], alphabet: bytes = BITCOIN_ALPHABET
+    v: 'Union[str, bytes]', alphabet: bytes = BITCOIN_ALPHABET
 ) -> bytes:
     """
     Encode a string using Base58
@@ -138,7 +136,7 @@ def b58encode(
 
 @_memo
 def _get_base58_decode_map(alphabet: bytes,
-                           autofix: bool) -> Mapping[int, int]:
+                           autofix: bool) -> 'Mapping[int, int]':
     invmap = {char: index for index, char in enumerate(alphabet)}
 
     if autofix:
@@ -163,7 +161,7 @@ def _get_base58_translate_table(alphabet: bytes, autofix: bool) -> bytes:
 
 
 def b58decode_int(
-    v: Union[str, bytes], alphabet: bytes = BITCOIN_ALPHABET, *,
+    v: 'Union[str, bytes]', alphabet: bytes = BITCOIN_ALPHABET, *,
     autofix: bool = False
 ) -> int:
     """
@@ -205,7 +203,7 @@ def b58decode_int(
 
 
 def b58decode(
-    v: Union[str, bytes], alphabet: bytes = BITCOIN_ALPHABET, *,
+    v: 'Union[str, bytes]', alphabet: bytes = BITCOIN_ALPHABET, *,
     autofix: bool = False
 ) -> bytes:
     """
@@ -234,9 +232,7 @@ def b58decode(
         table, b4, p2, pv = info
         digits = v.translate(table)
         if b'\xff' not in digits:
-            pad = -len(digits) % 8
-            if pad:
-                digits = b'\0' * pad + digits
+            digits = _ZPAD8[len(digits) & 7] + digits
             acc = 0
             it = iter(memoryview(digits).cast('H'))
             for p, q, r, s in zip(it, it, it, it):
@@ -265,10 +261,12 @@ def _pair_values(base: int) -> list:
 
 _DECODE_INFO: dict = {}
 _DECODE_INFO_AF: dict = {}
+# Zero-digit prefix that pads a digit string of length n to a multiple of 8.
+_ZPAD8 = tuple(b'\0' * (-k % 8) for k in range(8))
 
 
 def b58encode_check(
-    v: Union[str, bytes], alphabet: bytes = BITCOIN_ALPHABET
+    v: 'Union[str, bytes]', alphabet: bytes = BITCOIN_ALPHABET
 ) -> bytes:
     """
     Encode a string using Base58 with a 4 character checksum
@@ -305,15 +303,18 @@ def b58encode_check(
         result = b"".join(parts)
     else:
         result = b""
+    if origlen == len(v):
+        return result
     return alphabet[0:1] * (origlen - len(v)) + result
 
 
 _ENC_INFO: dict = {}
 _CHECK_INFO: dict = {}
+_CHECK_INFO_AF: dict = {}
 
 
 def b58decode_check(
-    v: Union[str, bytes], alphabet: bytes = BITCOIN_ALPHABET, *,
+    v: 'Union[str, bytes]', alphabet: bytes = BITCOIN_ALPHABET, *,
     autofix: bool = False
 ) -> bytes:
     '''Decode and verify the checksum of a Base58 encoded string'''
@@ -324,40 +325,39 @@ def b58decode_check(
     origlen = len(v)
     v = v.lstrip(alphabet[0:1])
     nz = origlen - len(v)
-    acc = -1
-    info = None
     if type(alphabet) is bytes:
-        key = (alphabet, bool(autofix))
-        info = _CHECK_INFO.get(key)
+        cache = _CHECK_INFO_AF if autofix else _CHECK_INFO
+        info = cache.get(alphabet)
         if info is None and len(alphabet) < 255:
             base = len(alphabet)
             pv = _pair_values(base)
             info = (_get_base58_translate_table(alphabet, bool(autofix)),
                     base ** 4, [x * base * base for x in pv], pv)
-            _CHECK_INFO[key] = info
-    elif isinstance(alphabet, bytes) and len(alphabet) < 255:
+            cache[alphabet] = info
+    elif not isinstance(alphabet, bytes) or len(alphabet) >= 255:
+        info = None
+    else:
         base = len(alphabet)
         pv = _pair_values(base)
         info = (_get_base58_translate_table(alphabet, autofix),
                 base ** 4, [x * base * base for x in pv], pv)
-    if info is not None:
+    if info is None:
+        acc = b58decode_int(v, alphabet, autofix=autofix)
+    else:
         table, b4, p2, pv = info
         digits = v.translate(table)
-        if b'\xff' not in digits:
-            pad = -len(digits) % 8
-            if pad:
-                digits = b'\0' * pad + digits
+        if b'\xff' in digits:
+            acc = b58decode_int(v, alphabet, autofix=autofix)
+        else:
+            digits = _ZPAD8[len(digits) & 7] + digits
             acc = 0
             it = iter(memoryview(digits).cast('H'))
             for p, q, r, s in zip(it, it, it, it):
                 acc = (acc * b4 + (p2[p] + pv[q])) * b4 + (p2[r] + pv[s])
-    if acc < 0:
-        acc = b58decode_int(v, alphabet, autofix=autofix)
-    result = acc.to_bytes(nz + (acc.bit_length() + 7) // 8, 'big')
-    result, check = result[:-4], result[-4:]
-    digest = sha256(sha256(result).digest()).digest()
+    full = acc.to_bytes(nz + (acc.bit_length() + 7) // 8, 'big')
+    result = full[:-4]
 
-    if check != digest[:4]:
+    if full[-4:] != sha256(sha256(result).digest()).digest()[:4]:
         raise ValueError("Invalid checksum")
 
     return result
