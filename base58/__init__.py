@@ -82,6 +82,16 @@ def _get_base58_decode_map(alphabet: bytes,
     return invmap
 
 
+@lru_cache()
+def _get_base58_translate_table(alphabet: bytes, autofix: bool) -> bytes:
+    invmap = _get_base58_decode_map(alphabet, autofix)
+    table = bytearray(b'\xff' * 256)
+    for char, index in invmap.items():
+        if isinstance(char, int) and 0 <= char < 256:
+            table[char] = index
+    return bytes(table)
+
+
 def b58decode_int(
     v: Union[str, bytes], alphabet: bytes = BITCOIN_ALPHABET, *,
     autofix: bool = False
@@ -93,10 +103,27 @@ def b58decode_int(
         v = v.rstrip()
     v = scrub_input(v)
 
+    base = len(alphabet)
+    if isinstance(alphabet, bytes) and base < 255 and \
+            isinstance(v, bytes):
+        table = _get_base58_translate_table(alphabet, autofix)
+        digits = v.translate(table)
+        if b'\xff' not in digits:
+            pad = -len(digits) % 4
+            if pad:
+                digits = b'\0' * pad + digits
+            b2 = base * base
+            b3 = b2 * base
+            b4 = b3 * base
+            decimal = 0
+            it = iter(digits)
+            for a, b, c, d in zip(it, it, it, it):
+                decimal = decimal * b4 + (a * b3 + b * b2 + c * base + d)
+            return decimal
+
     map = _get_base58_decode_map(alphabet, autofix=autofix)
 
     decimal = 0
-    base = len(alphabet)
     try:
         for char in v:
             decimal = decimal * base + map[char]
