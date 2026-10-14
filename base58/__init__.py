@@ -241,6 +241,18 @@ def _dense_tail(x: int, s: int, tail) -> int:
                  + _dense8(hi & q, s, m, m1, m2, m3)) * m5
                 + (_dense8(lo >> 8 * s, s, m, m1, m2, m3) * m4
                    + _dense8(lo & q, s, m, m1, m2, m3)))
+    if len(tail) > 5:
+        # 64+ lanes: unrolled eight-lane blocks, then pairwise block merges.
+        m1, m2, m3 = tail[:3]
+        b = 8 * s
+        q = (1 << b) - 1
+        lanes = [_dense8(x >> k & q, s, m, m1, m2, m3)
+                 for k in range(b * ((1 << (len(tail) - 3)) - 1), 0, -b)]
+        lanes.append(_dense8(x & q, s, m, m1, m2, m3))
+        for mult in tail[3:]:
+            it = iter(lanes)
+            lanes = [a * mult + c for a, c in zip(it, it)]
+        return lanes[0]
     lanes = [(x >> k) & m for k in range(s * ((1 << len(tail)) - 1), 0, -s)]
     lanes.append(x & m)
     for mult in tail:
@@ -314,7 +326,7 @@ def _get_decoder(n2: int, base: int):
     # identity when the low lane cannot reach the shifted bits.
     free = not tail and base < (1 << (8 - t))
     last = len(sub) + len(plan)
-    ns = {'D': _dense_tail, 'F': int.from_bytes}
+    ns = {'F': int.from_bytes}
     body = ["x = F(d, 'big')"]
     i = 0
     for shift, mask, c in sub:
@@ -336,8 +348,32 @@ def _get_decoder(n2: int, base: int):
             body.append('x = (x >> %d & h%d) * c%d + (x & m%d)'
                         % (shift, i, i, i))
     if tail:
-        ns['T'] = tail
-        body.append('return D(x, %d, T)' % s)
+        # Dense pairwise merges of the remaining lanes, unrolled into
+        # straight-line code with precomputed masks and multipliers.
+        cnt = [0]
+
+        def emit(v, lv):
+            if lv < 0:
+                return v
+            cnt[0] += 1
+            a, b, r = 'a%d' % cnt[0], 'b%d' % cnt[0], 'r%d' % cnt[0]
+            w = s << lv
+            ns['K%d' % lv] = (1 << w) - 1
+            # base**k == odd**k << t*k: multiply by the smaller odd part.
+            k = t * (w >> 3)
+            ns['T%d' % lv] = tail[lv] >> k
+            body.append('%s = %s >> %d' % (a, v, w))
+            body.append('%s = %s & K%d' % (b, v, lv))
+            ea = emit(a, lv - 1)
+            eb = emit(b, lv - 1)
+            if k:
+                body.append('%s = (%s * T%d << %d) + %s'
+                            % (r, ea, lv, k, eb))
+            else:
+                body.append('%s = %s * T%d + %s' % (r, ea, lv, eb))
+            return r
+
+        body.append('return %s' % emit('x', len(tail) - 1))
     else:
         body.append('return x')
     params = ''.join(', %s=%s' % (k, k) for k in ns)
